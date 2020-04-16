@@ -11,16 +11,17 @@ import AVFoundation
 
 class ViewController: UIViewController,UIGestureRecognizerDelegate,AVCaptureVideoDataOutputSampleBufferDelegate  {
     let captureSession = AVCaptureSession()
-    let videoDevice = AVCaptureDevice.default(for: AVMediaType.video)
+    let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
     var videoOutput = AVCaptureVideoDataOutput()
     var hideView = UIView()
+    let captureDelegateQueue = DispatchQueue.init(label: "com.arabian9ts.faceDetection")
+    var faceViewPool = NSMutableSet()
     
     override func viewDidLoad() {
         super.viewDidLoad()
         
         do {
-            let captureDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: AVMediaType.video, position: .front)
-            let videoInput: AVCaptureInput = try AVCaptureDeviceInput(device: captureDevice!) as AVCaptureInput
+            let videoInput: AVCaptureInput = try AVCaptureDeviceInput(device: self.videoDevice!) as AVCaptureInput
             self.captureSession.addInput(videoInput)
         } catch let error as NSError {
             print(error)
@@ -28,8 +29,7 @@ class ViewController: UIViewController,UIGestureRecognizerDelegate,AVCaptureVide
         
         self.videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String : Int(kCVPixelFormatType_32BGRA)]
         
-        let queue = DispatchQueue.main
-        self.videoOutput.setSampleBufferDelegate(self, queue: queue)
+        self.videoOutput.setSampleBufferDelegate(self, queue: self.captureDelegateQueue)
         self.videoOutput.alwaysDiscardsLateVideoFrames = true
         
         self.captureSession.addOutput(self.videoOutput)
@@ -44,6 +44,7 @@ class ViewController: UIViewController,UIGestureRecognizerDelegate,AVCaptureVide
             if connection.isVideoOrientationSupported {
                 connection.videoOrientation = AVCaptureVideoOrientation.portrait
             }
+            connection.isVideoMirrored = self.videoDevice?.position == .front
         }
         hideView = UIView(frame: self.view.bounds)
         self.view.addSubview(hideView)
@@ -66,52 +67,48 @@ class ViewController: UIViewController,UIGestureRecognizerDelegate,AVCaptureVide
         
         CVPixelBufferUnlockBaseAddress(imageBuffer, CVPixelBufferLockFlags(rawValue: 0))
         let resultImage: UIImage = UIImage(cgImage: imageRef!)
-        
+
         return resultImage
     }
     
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        // convert to ciimage
+        let image = self.imageFromSampleBuffer(sampleBuffer: sampleBuffer)
+        let ciimage: CIImage! = CIImage(image: image)
+
+        let detector: CIDetector = CIDetector(ofType: CIDetectorTypeFace, context: nil, options:[CIDetectorAccuracy: CIDetectorAccuracyLow])!
+
+        // detect face
+        let faces = detector.features(in: ciimage, options: [CIDetectorSmile : true, CIDetectorEyeBlink : true])
+
         DispatchQueue.main.async {
-            
-            // convert to ciimage
-            let image = self.imageFromSampleBuffer(sampleBuffer: sampleBuffer)
-            let ciimage: CIImage! = CIImage(image: image)
-            
-            let detector: CIDetector = CIDetector(ofType: CIDetectorTypeFace, context: nil, options:[CIDetectorAccuracy: CIDetectorAccuracyHigh])!
-            
-            // fetch parameter list
-            let options = [CIDetectorSmile : true, CIDetectorEyeBlink : true]
-            
-            // detect face
-            let faces = detector.features(in: ciimage, options: options)
-            
             // remove previous face tracker
             for subview: UIView in self.view.subviews  {
                 subview.removeFromSuperview()
             }
-            
+
             for feature in faces as! [CIFaceFeature] {
-                
+
                 // check if you are smiling
                 if feature.hasSmile {
                     print("smiling!!")
                 }
-                
+
                 var faceRect: CGRect = (feature as AnyObject).bounds
                 let widthPer = (self.view.bounds.width/image.size.width)
                 let heightPer = (self.view.bounds.height/image.size.height)
-                
+
                 // UIKit has the origin at the upper left, but CoreImage has the origin at the lower left
                 // so that it is aligned
                 faceRect.origin.y = image.size.height - faceRect.origin.y - faceRect.size.height
-                
+
                 // magnification conversion
                 faceRect.origin.x = faceRect.origin.x * widthPer
                 faceRect.origin.y = faceRect.origin.y * heightPer
                 faceRect.size.width = faceRect.size.width * widthPer
                 faceRect.size.height = faceRect.size.height * heightPer
-                
+
                 let rect = Draw(frame: faceRect)
                 self.view.addSubview(rect)
             }
